@@ -1,7 +1,8 @@
 """
 main.py
 """
-from localization_detection import ld_particle
+from localization_detection import ld_particle, evaluate_doa
+from localization_detection import parse_annotations
 import time, datetime
 import os
 import soundfile as sf
@@ -16,14 +17,30 @@ matlab_path = '/home/pans/source/DCASE2021/multiple-target-tracking-master'
 eng.addpath(matlab_path)
 
 
-data_folder_path = '/home/pans/datasets/DCASE2021/foa_dev'
-audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk('/home/pans/datasets/DCASE2021/foa_dev') for f in fn]
+data_folder_path = '/home/pans/datasets/DCASE2021/foa_dev/dev-train'
+csv_file_path = '/home/pans/datasets/DCASE2021/metadata_dev/dev-train'
+audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(data_folder_path) for f in fn]
 
 fs = 24000
 label_hop_len_s = 0.1 # todo check that it still holds
+window_size = 2400
+window_overlap = 1200
+nfft = 2400
 
+################################################
+# PARAMETERS
+diff_th = 0.1 # [0, 1] linear
+K_th = 10 # [1, 25] linear
+min_event_length = 10 # [1, 25] linear
+V_azi  = 2 # [0.1, 10] log
+V_ele = 1  # [0.1, 10] log
+in_sd = 5  # [0, 50] linear
+in_sdn = 20  # [0, 50] linear
+init_birth = 0.25  # [0, 1] linear
+in_cp = 0.25  # [0, 1] linear
+num_particles = 30 # [10, 100]
+################################################
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
         audio_files = audio_files[:10]
@@ -38,24 +55,13 @@ if __name__ == '__main__':
         st = datetime.datetime.fromtimestamp(time.time()).strftime('%H:%M:%S')
         print("{}: {}, {}".format(audio_file_idx, st, audio_file_name))
 
-        ############################################
-        # Preprocess: prepare file output in case
-        # if write:
-        #     csv_file_name = (os.path.splitext(audio_file_name)[0]) + '.csv'
-        #     csv_file_path = os.path.join(result_folder_path, csv_file_name)
-        #     # since we always append to the csv file, make a reset on the file
-        #     if os.path.exists(csv_file_path):
-        #         # os.remove(csv_file_path)
-        #         continue # SKIP EXISTING FILES!
-
-        ############################################
         # Open file
         audio_file_path = os.path.join(data_folder_path, audio_file_name)
         b_format, sr = sf.read(audio_file_path)
 
         # Get spectrogram
         # TODO: move to suitable place
-        stft_method_args = ['hann', 2400, 1200, 2400, None]
+        stft_method_args = ['hann', window_size, window_overlap, nfft]
         stft = compute_spectrogram(b_format, sr, *stft_method_args)
 
         # ############################################
@@ -63,45 +69,18 @@ if __name__ == '__main__':
         ld_method_string = 'ld_particle'
         ld_method = locals()[ld_method_string]
         ld_method_args = [0.1, 10, 10, 2, 1, 5, 20, 0.25, 0.25, 30]
-        event_list = ld_method(stft, eng, *ld_method_args)
+        est_event_list = ld_method(stft, eng, *ld_method_args)
+
+        # ############################################
+        pred_file_name = audio_file_name.split('/')[-1].split('.')[0] + '.csv'
+        pred_file_path = os.path.join(csv_file_path, pred_file_name)
+        gt_event_list = parse_annotations(pred_file_path)
+
 
         ############################################
-        # Get monophonic estimates of the event, and predict the classes
-        num_events = len(event_list)
-        for event_idx in range(num_events):
-            event = event_list[event_idx]
-            mono_event = get_mono_audio_from_event(b_format, event, fs, label_hop_len_s)
-
-        print(mono_event)
-
-        # Predict
-        #     class_method_string = params['class_method']
-        #     class_method = locals()[class_method_string]
-        #     class_method_args = params['class_method_args']
-        #     class_idx = class_method(mono_event, *class_method_args)
-        #     # class_idx = class_method(temp_file_name, *class_method_args)
-        #     event.set_classID(class_idx)
-        #     ############################################
-        #     # Postprocessing:
-        #     process_event = True
-        #     try:
-        #         event_filter = params['event_filter_activation']
-        #     except:
-        #         event_filter = False  # default True, so it works also when no event_filter
-        #     if event_filter:
-        #         event_filter_method_string = params['event_filter_method']
-        #         event_filter_method = locals()[event_filter_method_string]
-        #         event_filters_method_args = params['event_filter_method_args']
-        #         process_event = event_filter_method(event, *event_filters_method_args)
-        #
-        #     ############################################
-        #     # Generate metadata file from event
-        #     if write and process_event:
-        #         event.export_csv(csv_file_path)
-        #
-        # ############################################
-        # # Plot results
-        plot_results(csv_file_path, params)
+        # compute DOA evaluation metrics
+        doa_error, average_estimation_distance = evaluate_doa(est_event_list, gt_event_list)
+        plot_results(est_event_list, gt_event_list, pred_file_name)
 
     print('-------------- PROCESSING FINISHED --------------')
     print('                                                 ')
