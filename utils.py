@@ -114,62 +114,150 @@ def plot_event_list(event_list, name):
 
     plt.show()
 
-def plot_results(est_event_list, gt_event_list, name):
-    cmap = ['b', 'r', 'g', 'y', 'k', 'c', 'm', 'b', 'r', 'g', 'y', 'k', 'c', 'm']
+def plot_results(est_event_list, gt_event_list, name, assign=None):
+    cmap = ['b', 'r', 'g', 'y', 'c', 'm'] * 10 # more than enough colors
     plt.figure()
     plt.suptitle(name)
 
-    # EST
-    plt.subplot(321)
-    for e in est_event_list:
-        frames = e.get_frames()
-        classID = e.get_classID()
-        eventNumber = e.get_eventNumber()
-        plt.plot(frames, np.full(len(frames), classID), marker='.', linestyle='None', markersize=4)
-    plt.grid()
+    if assign is None:
+        # colors representing events, in ascending order
+        # EST
+        plt.subplot(321)
+        for e_idx, e in enumerate(est_event_list):
+            frames = e.get_frames()
+            classID = e.get_classID()
+            eventNumber = e.get_eventNumber()
+            plt.plot(frames, np.full(len(frames), classID), marker='.', linestyle='None', markersize=4, label=e_idx)
+        plt.grid()
+        plt.legend()
 
-    plt.subplot(323)
-    for e in est_event_list:
-        frames = e.get_frames()
-        azis = e.get_azis()
-        eventNumber = e.get_eventNumber()
-        plt.plot(frames, azis, marker='.', linestyle='None', markersize=4)
-    plt.grid()
+        plt.subplot(323)
+        for e in est_event_list:
+            frames = e.get_frames()
+            azis = e.get_azis()
+            eventNumber = e.get_eventNumber()
+            plt.plot(frames, azis, marker='.', linestyle='None', markersize=4)
+        plt.grid()
 
-    plt.subplot(325)
-    for e in est_event_list:
-        frames = e.get_frames()
-        eles = e.get_eles()
-        eventNumber = e.get_eventNumber()
-        plt.plot(frames, eles, marker='.', linestyle='None', markersize=4)
-    plt.grid()
+        plt.subplot(325)
+        for e in est_event_list:
+            frames = e.get_frames()
+            eles = e.get_eles()
+            eventNumber = e.get_eventNumber()
+            plt.plot(frames, eles, marker='.', linestyle='None', markersize=4)
+        plt.grid()
 
-    # GT
-    plt.subplot(322)
-    for e in gt_event_list:
-        frames = e.get_frames()
-        classID = e.get_classID()
-        eventNumber = e.get_eventNumber()
-        plt.plot(frames, np.full(len(frames), classID), marker='.', linestyle='None', markersize=4)
-    plt.grid()
+        # GT
+        plt.subplot(322)
+        for e_idx, e in enumerate(gt_event_list):
+            frames = e.get_frames()
+            classID = e.get_classID()
+            eventNumber = e.get_eventNumber()
+            plt.plot(frames, np.full(len(frames), classID), marker='.', linestyle='None', markersize=4, label=e_idx)
+        plt.grid()
+        plt.legend()
 
-    plt.subplot(324)
-    for e in gt_event_list:
-        frames = e.get_frames()
-        azis = e.get_azis()
-        eventNumber = e.get_eventNumber()
-        plt.plot(frames, azis, marker='.', linestyle='None', markersize=4)
-    plt.grid()
+        plt.subplot(324)
+        for e in gt_event_list:
+            frames = e.get_frames()
+            azis = e.get_azis()
+            eventNumber = e.get_eventNumber()
+            plt.plot(frames, azis, marker='.', linestyle='None', markersize=4)
+        plt.grid()
 
-    plt.subplot(326)
-    for e in gt_event_list:
-        frames = e.get_frames()
-        eles = e.get_eles()
-        eventNumber = e.get_eventNumber()
-        plt.plot(frames, eles, marker='.', linestyle='None', markersize=4)
-    plt.grid()
+        plt.subplot(326)
+        for e in gt_event_list:
+            frames = e.get_frames()
+            eles = e.get_eles()
+            eventNumber = e.get_eventNumber()
+            plt.plot(frames, eles, marker='.', linestyle='None', markersize=4)
+        plt.grid()
 
-    plt.show()
+    else:
+        # there is an assignment
+        # EST
+        plt.subplot(321)
+        for e_idx, e in enumerate(est_event_list):
+            frames = e.get_frames()
+            classID = e.get_classID()
+            eventNumber = e.get_eventNumber()
+            color = None
+            if e_idx in assign:
+                idx = np.where(assign==e_idx)[0][0]
+                color = cmap[idx]
+            else:
+                color = 'black'
+            plt.plot(frames, np.full(len(frames), classID), color=color, marker='.', linestyle='None', markersize=4, label=e_idx)
+        plt.grid()
+
+        plt.subplot(323)
+        for e_idx, e in enumerate(est_event_list):
+            frames = e.get_frames()
+            azis = e.get_azis()
+            eventNumber = e.get_eventNumber()
+            color = None
+            if e_idx in assign:
+                idx = np.where(assign == e_idx)[0][0]
+                color = cmap[idx]
+            else:
+                color = 'black'
+            plt.plot(frames, azis, marker='.', color=color, linestyle='None', markersize=4)
+        plt.grid()
+
+        plt.subplot(325)
+        for e_idx, e in enumerate(est_event_list):
+            frames = e.get_frames()
+            eles = e.get_eles()
+            eventNumber = e.get_eventNumber()
+            color = None
+            if e_idx in assign:
+                idx = np.where(assign == e_idx)[0][0]
+                color = cmap[idx]
+            else:
+                color = 'black'
+            plt.plot(frames, eles, color=color, marker='.', linestyle='None', markersize=4)
+        plt.grid()
+
+        # GT
+        plt.subplot(322)
+        for e_idx, e in enumerate(gt_event_list):
+            frames = e.get_frames()
+            classID = e.get_classID()
+            eventNumber = e.get_eventNumber()
+            color = None
+            if not np.isnan(assign[e_idx]):
+                color = cmap[e_idx]
+            else:
+                color = 'black'
+            plt.plot(frames, np.full(len(frames), classID), color=color, marker='.', linestyle='None', markersize=4, label=e_idx)
+        plt.grid()
+
+        plt.subplot(324)
+        for e_idx, e in enumerate(gt_event_list):
+            frames = e.get_frames()
+            azis = e.get_azis()
+            eventNumber = e.get_eventNumber()
+            color = None
+            if not np.isnan(assign[e_idx]):
+                color = cmap[e_idx]
+            else:
+                color = 'black'
+            plt.plot(frames, azis, color=color, marker='.', linestyle='None', markersize=4)
+        plt.grid()
+
+        plt.subplot(326)
+        for e_idx, e in enumerate(gt_event_list):
+            frames = e.get_frames()
+            eles = e.get_eles()
+            eventNumber = e.get_eventNumber()
+            color = None
+            if not np.isnan(assign[e_idx]):
+                color = cmap[e_idx]
+            else:
+                color = 'black'
+            plt.plot(frames, eles, color=color, marker='.', linestyle='None', markersize=4)
+        plt.grid()
+
 
 
 # SIGNAL

@@ -1,7 +1,7 @@
 """
 main.py
 """
-from localization_detection import ld_particle, evaluate_doa
+from localization_detection import ld_particle, evaluate_doa, assign_events
 from localization_detection import parse_annotations
 import time, datetime
 import os
@@ -27,6 +27,8 @@ window_size = 2400
 window_overlap = 1200
 nfft = 2400
 
+plot = True
+
 ################################################
 # PARAMETERS
 diff_th = 0.1 # [0, 1] linear
@@ -44,6 +46,7 @@ num_particles = 30 # [10, 100]
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
         audio_files = audio_files[:10]
+        # audio_files = [audio_files[1]]
 
     start_time = time.time()
     print('                                              ')
@@ -76,11 +79,17 @@ if __name__ == '__main__':
         pred_file_path = os.path.join(csv_file_path, pred_file_name)
         gt_event_list = parse_annotations(pred_file_path)
 
-
         ############################################
         # compute DOA evaluation metrics
-        doa_error, average_estimation_distance = evaluate_doa(est_event_list, gt_event_list)
-        plot_results(est_event_list, gt_event_list, pred_file_name)
+        # doa_error, recall = evaluate_doa(est_event_list, gt_event_list)
+        # estimation distance
+        similarity_th = 0.3
+        assignment = assign_events(est_event_list, gt_event_list, similarity_th)
+        # plot
+        plot_results(est_event_list, gt_event_list, pred_file_name, assign=assignment)
+        if plot:
+            import matplotlib.pyplot as plt
+            plt.show()
 
     print('-------------- PROCESSING FINISHED --------------')
     print('                                                 ')

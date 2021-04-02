@@ -7,6 +7,7 @@ import tempfile
 import warnings
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from evaluation_metrics import compute_doa_scores_regr, distance_between_gt_pred
 from utils import doa, diffuseness, circmedian, Event
@@ -355,6 +356,13 @@ def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd,
 
 
 def evaluate_doa(pred_event_list, gt_event_list):
+    """
+    Given an estimated event list and the corresponding groundtruth event list,
+    compute the doa score (distance and recall) based in DCASE2019 DOA metrics (class-independent)
+    :param pred_event_list: predicted event list
+    :param gt_event_list:  annotated event list
+    :return: tuple (doa error, number of events estimation distance)
+    """
 
     def get_doas_at_frame(event_list, frame):
         doas = []
@@ -402,7 +410,108 @@ def evaluate_doa(pred_event_list, gt_event_list):
 
     gt_num_doas = get_num_doas_per_frame(gt_event_list)
     pred_num_doas = get_num_doas_per_frame(pred_event_list)
-    average_estimation_distance = np.mean(np.abs(gt_num_doas - pred_num_doas))
-    print(average_estimation_distance)
+    true_positives = np.sum(pred_num_doas == gt_num_doas)
+    false_negatives = np.sum(pred_num_doas < gt_num_doas)
+    false_positives = np.sum(pred_num_doas > gt_num_doas)
+    recall = (true_positives + false_positives) / (true_positives + false_positives + false_negatives)
+    print(recall)
+    # average_estimation_distance = np.mean(np.abs(gt_num_doas - pred_num_doas))
+    # print(average_estimation_distance)
 
-    return doa_error, average_estimation_distance
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.plot(pred_num_doas, label='pred')
+    plt.plot(gt_num_doas, label='gt')
+    plt.grid()
+    plt.legend()
+    plt.show()
+
+    # return doa_error, average_estimation_distance
+    return doa_error, recall
+
+
+def assign_events(pred_event_list, gt_event_list, similiarity_th=0.5):
+
+    def common_elements(list1, list2):
+        return sorted(list(set(list1).intersection(list2)))
+
+    gt_len, pred_len = len(gt_event_list), len(pred_event_list)
+    ind_pairs = np.array([[x, y] for y in range(pred_len) for x in range(gt_len)])
+    time_similarity_matrix = np.zeros((gt_len, pred_len))
+    space_similarity_matrix = np.zeros((gt_len, pred_len))
+    total_similarity_matrix = None
+
+    # Slow implementation
+
+    for gt_event_idx, gt_event in enumerate(gt_event_list):
+        for pred_event_idx, pred_event in enumerate(pred_event_list):
+            # check time coincidence
+            gt_frames = gt_event.get_frames()
+            pred_frames = pred_event.get_frames()
+            common_frames = common_elements(gt_frames, pred_frames)
+            time_similarity_matrix[gt_event_idx, pred_event_idx] = \
+                min( len(common_frames)/len(gt_frames), len(common_frames)/len(pred_frames) )
+
+            # check spatial coincidence - time-restricted
+            for frame in common_frames:
+                index_of_frame_gt = np.where(gt_frames==frame)[0][0]
+                azi_gt = gt_event.get_azis()[index_of_frame_gt]
+                ele_gt = gt_event.get_eles()[index_of_frame_gt]
+                pos_gt = np.asarray([[azi_gt, ele_gt]])
+
+                index_of_frame_pred = np.where(pred_frames==frame)[0][0]
+                azi_pred = pred_event.get_azis()[index_of_frame_pred]
+                ele_pred = pred_event.get_eles()[index_of_frame_pred]
+                pos_pred = np.asarray([[azi_pred, ele_pred]])
+
+                # normalized inverse of distance: 1 is coincidence, 0 is maximum distance (pi)
+                space_similarity_matrix[gt_event_idx, pred_event_idx] = \
+                    np.abs(np.pi - distance_between_gt_pred(pos_gt, pos_pred)) / np.pi
+
+    # get total similarity and find most likely (highest scoring) pred event for each gt event
+    total_similarity_matrix = time_similarity_matrix * space_similarity_matrix
+    best_pred_events = np.empty(gt_len) # each element correspond to a best matching gt_ordered index
+    best_pred_events[:] = np.nan
+    best_pred_events_score = np.empty(gt_len)
+    for gt_event_idx in range(gt_len):
+        row = total_similarity_matrix[gt_event_idx,:]
+        best_candidate = np.where(row == row.max())[0][0]
+        best_candidate_score = row[best_candidate]
+        if best_candidate_score >= similiarity_th:
+            best_pred_events[gt_event_idx] = best_candidate
+            best_pred_events_score[gt_event_idx] = best_candidate_score
+        # each gt event must map to one different pred event.
+        # if there is already a same candidate, keep the more likely and remove the other
+        # a nan will be interpreted as a false negative (missed event)
+        if best_candidate in best_pred_events[:gt_event_idx]:
+            other_candidate_idx = np.where(best_candidate == best_pred_events)[0][0]
+            best_candidate_score = total_similarity_matrix[gt_event_idx,best_candidate]
+            other_candidate_score = total_similarity_matrix[other_candidate_idx,best_candidate]
+            if  best_candidate_score > other_candidate_score:
+                best_pred_events[other_candidate_idx] = np.nan
+            else:
+                best_pred_events[gt_event_idx] = np.nan
+    print(best_pred_events)
+
+    def highlight_cell(x, y, ax=None, **kwargs):
+        rect = plt.Rectangle((x-0.5, y-0.5), 1, 1, fill=False, **kwargs)
+        ax = ax or plt.gca()
+        ax.add_patch(rect)
+        return rect
+
+    plt.figure()
+    plt.subplot(311)
+    plt.title("time similarity")
+    plt.imshow(time_similarity_matrix)
+    plt.subplot(312)
+    plt.title("space similarity")
+    plt.imshow(space_similarity_matrix)
+    plt.subplot(313)
+    plt.title("total similarity")
+    plt.imshow(total_similarity_matrix)
+    for idx in range(gt_len):
+        highlight_cell(best_pred_events[idx], idx, color="red", linewidth=1)
+
+    # row_ind, col_ind = linear_sum_assignment(cost_mat)
+    # cost = cost_mat[row_ind, col_ind].sum()
+    return best_pred_events
