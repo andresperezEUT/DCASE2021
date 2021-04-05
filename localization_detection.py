@@ -4,19 +4,66 @@ localization_detection.py
 import csv
 import os
 import tempfile
-import warnings
-
 import numpy as np
-from scipy.optimize import linear_sum_assignment
-
-from evaluation_metrics import compute_doa_scores_regr, distance_between_gt_pred
-from utils import doa, diffuseness, circmedian, Event
+from evaluation_metrics import distance_between_gt_pred
+from utils import doa, diffuseness, circmedian, Event, compute_spectrogram
 from scipy.io import loadmat
 import matplotlib.pyplot as plt
+import soundfile as sf
+import config as conf
 
-from matlab import engine
+
+########################################################################
+# High level functions
+
+def localize_detect(parameters, audio_file_name):
+
+    # If there is precomputed spectrogram, go for it
+    stft = None
+    file_name = os.path.split(os.path.splitext(audio_file_name)[0])[-1]
+    stft_file_path = os.path.join(conf.stft_folder_path, file_name+'.npy')
+    if os.path.exists(stft_file_path):
+        stft = np.load(stft_file_path, allow_pickle=False)
+    # Otherwise, compute it
+    else:
+        audio_file_path = os.path.join(conf.data_folder_path, audio_file_name)
+        b_format, sr = sf.read(audio_file_path)
+        stft_method_args = ['hann', conf.window_size, conf.window_overlap, conf.nfft]
+        stft = compute_spectrogram(b_format, sr, *stft_method_args)
+
+    # ############################################
+    # Localization and detection analysis: from stft to event_list
+    ld_method_args = [parameters['diff_th'],
+                      parameters['K_th'],
+                      parameters['min_event_length'],
+                      parameters['V_azi'],
+                      # parameters['V_ele'],
+                      parameters['V_azi']/2, # restrict dimensionality on vertical velocity
+                      parameters['in_sd'],
+                      parameters['in_sdn'],
+                      parameters['init_birth'],
+                      parameters['in_cp'],
+                      parameters['num_particles'],
+                      ]
+    est_event_list = ld_particle(stft, conf.eng, *ld_method_args)
+    return est_event_list
+
+def get_groundtruth(audio_file_name):
+    # ############################################
+    pred_file_name = audio_file_name.split('/')[-1].split('.')[0] + '.csv'
+    pred_file_path = os.path.join(conf.csv_file_path, pred_file_name)
+    gt_event_list = parse_annotations(pred_file_path)
+    return gt_event_list
+
+def get_evaluation_metrics(est_event_list, gt_event_list, parameters, plot=False):
+    doa_error, frame_recall = evaluate_doa(est_event_list, gt_event_list, plot=plot)
+    _, event_precision, event_recall = \
+        assign_events(est_event_list, gt_event_list, parameters['event_similarity_th'], plot=plot)
+    return event_precision, event_recall, doa_error, frame_recall
 
 
+
+########################################################################
 
 def parse_annotations(csv_path):
     """
@@ -63,9 +110,76 @@ def parse_annotations(csv_path):
 
     return event_list
 
+def trim_event(e):
+
+    eventNumber = e.get_eventNumber()
+    frames = e.get_frames()
+    azis = e.get_azis()
+    eles = e.get_eles()
+
+    diff = frames[1:] - frames[:-1]
+    # large diffs tend to be at the end, so just discard everything after the peak
+    peak = np.argwhere(diff>40) # TODO ACHTUNG: HARDCODED VALUE
+    if peak.size>0:
+        # until the peak
+        peak_idx = peak[0][0]
+        new_frames = frames[:peak_idx+1]
+        new_azis = azis[:peak_idx+1]
+        new_eles = eles[:peak_idx+1]
+    else:
+        # just copy
+        new_frames = frames
+        new_azis = azis
+        new_eles = eles
+
+    return Event(-1, eventNumber, np.asarray(new_frames), np.asarray(new_azis), np.asarray(new_eles))
 
 
-def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd, in_sdn, init_birth, in_cp, num_particles, debug_plot=False, metadata_file_path=None):
+def interpolate_event(e):
+
+    eventNumber = e.get_eventNumber()
+    frames = e.get_frames()
+    azis = e.get_azis()
+    eles = e.get_eles()
+
+    new_frames = []
+    new_azis = []
+    new_eles = []
+
+    frame_dist = frames[1:] - frames[:-1]
+    for fd_idx, fd in enumerate(frame_dist):
+        if fd == 1:
+            # contiguous, set next
+            new_frames.append(frames[fd_idx])
+            new_azis.append(azis[fd_idx])
+            new_eles.append(eles[fd_idx])
+        else:
+            start = frames[fd_idx]
+            end = frames[fd_idx+1]
+            new_frames.extend(np.arange(start, end, 1).tolist())
+            new_azis.extend(np.linspace(azis[fd_idx], azis[fd_idx+1], fd).tolist())
+            new_eles.extend(np.linspace(eles[fd_idx], eles[fd_idx+1], fd).tolist())
+
+    return Event(-1, eventNumber, np.asarray(new_frames), np.asarray(new_azis), np.asarray(new_eles))
+
+def decimate_event(e):
+    eventNumber = e.get_eventNumber()
+    frames = e.get_frames()
+    azis = e.get_azis()
+    eles = e.get_eles()
+
+    new_frames = []
+    new_azis = []
+    new_eles = []
+
+    for f_idx, f in enumerate(frames):
+        if f%2==1: # only odd
+            new_frames.append(f//2)
+            new_azis.append(azis[f_idx])
+            new_eles.append(eles[f_idx])
+    return Event(-1, eventNumber, np.asarray(new_frames), np.asarray(new_azis), np.asarray(new_eles))
+
+def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd, in_sdn, init_birth, in_cp, num_particles):
     """
     find single-source tf-bins, and then feed them into the particle tracker
     :param stft:
@@ -86,27 +200,10 @@ def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd,
     diff_mask[0] = False # manually set artifacts of low diffuseness in the low end spectrum
 
     # create masked doa with nans
-    doa_masked = np.empty((2, K, N))
-    for k in range(K):
-        for n in range(N):
-            if diff_mask[k, n]:
-                doa_masked[:, k, n] = DOA[:, k, n]
-            else:
-                doa_masked[:, k, n] = np.nan
+    doa_masked = np.copy(DOA)
+    doa_masked[0][~diff_mask] = np.nan
+    doa_masked[1][~diff_mask] = np.nan
 
-    # # decimate DOA in time
-    # DOA_decimated = np.empty((2, K, N // 2))  # todo fix number
-    # for n in range(N // 2):
-    #     # todo fix numbers depending on decimation factor
-    #     # todo: nanmean but circular!!!
-    #     meanvalue = np.nanmean([doa_masked[:, :, n * 2], doa_masked[:, :, n * 2 - 1]], axis=0)
-    #     meanvalue2 = np.mean([doa_masked[:, :, n * 2], doa_masked[:, :, n * 2 - 1]], axis=0)
-    #     # DOA_decimated[:, :, n] = meanvalue
-    #     DOA_decimated[:, :, n] = meanvalue2
-    #     # if np.any(~np.isnan(meanvalue)):
-    #     #     pass
-    # M, K, N = DOA_decimated.shape
-    #
     DOA_decimated = doa_masked
 
     # Create lists of azis and eles for each output frame size
@@ -120,48 +217,6 @@ def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd,
         if len(azis_filtered) > K_th:
             azis[n] = azis_filtered
             eles[n] = e[~np.isnan(e)]
-
-    # if debug_plot:
-    #     plt.figure()
-    #     # All estimates
-    #     for n in range(N):
-    #         if len(azis[n]) > 0:
-    #             a = np.mod(azis[n] * 180 / np.pi, 360)
-    #             plt.scatter(np.ones(len(a)) * n, a, marker='x', edgecolors='b')
-    #     # Circmedian
-    #     for n in range(N):
-    #         if len(azis[n]) > 0:
-    #             a = np.mod(azis[n] * 180 / np.pi, 360)
-    #             plt.scatter(n, np.mod(circmedian(a, 'deg'), 360), facecolors='none', edgecolors='k')
-    #
-    #     # circmean and std
-    #     plt.figure()
-    #     for n in range(N):
-    #         if len(azis[n]) > 0:
-    #             a = np.mod(azis[n] * 180 / np.pi, 360)
-    #             plt.errorbar(n, scipy.stats.circmean(a, high=360, low=0), yerr= scipy.stats.circstd(a, high=360, low=0))
-    #             plt.scatter(n, np.mod(circmedian(a, 'deg'), 360), facecolors='none', edgecolors='k')
-    #
-    #
-    #     # boxplot
-    #     import seaborn as sns
-    #     a = []
-    #     for n in range(N):
-    #         if len(azis[n]) > 0:
-    #             a.append(np.mod(azis[n] * 180 / np.pi, 360))
-    #         else:
-    #             a.append([])
-    #     plt.figure()
-    #     sns.boxplot(data=a)
-    #
-    #     # number of single-source bins in frequency for each n
-    #     plt.figure()
-    #     plt.grid()
-    #     for n in range(N):
-    #         if len(azis[n]) > 0:
-    #             plt.scatter(n, len(azis[n]), marker='x',  edgecolors='b')
-
-    # TODO: separate frames with two overlapping sources
 
     # Save into temp file
     fo = tempfile.NamedTemporaryFile()
@@ -182,11 +237,12 @@ def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd,
 
 
     # Call Matlab
-    # this_file_path = os.path.dirname(os.path.abspath(__file__))
-    # matlab_path = this_file_path + '/../multiple-target-tracking-master'
-    # eng.addpath(matlab_path)
-    eng.func_tracking(csv_file_path, float(V_azi), float(V_ele), float(in_sd),
-                      float(in_sdn), init_birth, in_cp, float(num_particles), nargout=0)
+    try:
+        eng.func_tracking(csv_file_path, float(V_azi), float(V_ele), float(in_sd),
+                          float(in_sdn), init_birth, in_cp, float(num_particles), nargout=0)
+    except:
+        return []
+
 
     # Load output matlab file
     output = loadmat(output_file_path)
@@ -214,85 +270,15 @@ def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd,
             event_list.append(Event(-1, event_count, frames, azis, eles))
             event_count = event_count + 1
 
-
-    def trim_event(e):
-
-        eventNumber = e.get_eventNumber()
-        frames = e.get_frames()
-        azis = e.get_azis()
-        eles = e.get_eles()
-
-        diff = frames[1:] - frames[:-1]
-        # large diffs tend to be at the end, so just discard everything after the peak
-        peak = np.argwhere(diff>40) # TODO ACHTUNG: HARDCODED VALUE
-        if peak.size>0:
-            # until the peak
-            peak_idx = peak[0][0]
-            new_frames = frames[:peak_idx+1]
-            new_azis = azis[:peak_idx+1]
-            new_eles = eles[:peak_idx+1]
-        else:
-            # just copy
-            new_frames = frames
-            new_azis = azis
-            new_eles = eles
-
-        return Event(-1, eventNumber, np.asarray(new_frames), np.asarray(new_azis), np.asarray(new_eles))
-
     trimmed_event_list = []
     for e in event_list:
         trimmed_event_list.append(trim_event(e))
     event_list = trimmed_event_list
 
-    def interpolate_event(e):
-
-        eventNumber = e.get_eventNumber()
-        frames = e.get_frames()
-        azis = e.get_azis()
-        eles = e.get_eles()
-
-        new_frames = []
-        new_azis = []
-        new_eles = []
-
-        frame_dist = frames[1:] - frames[:-1]
-        for fd_idx, fd in enumerate(frame_dist):
-            if fd == 1:
-                # contiguous, set next
-                new_frames.append(frames[fd_idx])
-                new_azis.append(azis[fd_idx])
-                new_eles.append(eles[fd_idx])
-            else:
-                start = frames[fd_idx]
-                end = frames[fd_idx+1]
-                new_frames.extend(np.arange(start, end, 1).tolist())
-                new_azis.extend(np.linspace(azis[fd_idx], azis[fd_idx+1], fd).tolist())
-                new_eles.extend(np.linspace(eles[fd_idx], eles[fd_idx+1], fd).tolist())
-
-        return Event(-1, eventNumber, np.asarray(new_frames), np.asarray(new_azis), np.asarray(new_eles))
-
     interpolated_event_list = []
     for e in event_list:
         interpolated_event_list.append(interpolate_event(e))
     event_list = interpolated_event_list
-
-    # TODO PARAMETRIZE
-    def decimate_event(e):
-        eventNumber = e.get_eventNumber()
-        frames = e.get_frames()
-        azis = e.get_azis()
-        eles = e.get_eles()
-
-        new_frames = []
-        new_azis = []
-        new_eles = []
-
-        for f_idx, f in enumerate(frames):
-            if f%2==1: # only odd
-                new_frames.append(f//2)
-                new_azis.append(azis[f_idx])
-                new_eles.append(eles[f_idx])
-        return Event(-1, eventNumber, np.asarray(new_frames), np.asarray(new_azis), np.asarray(new_eles))
 
     # Decimate list
     decimated_event_list = []
@@ -307,58 +293,14 @@ def ld_particle(stft, eng, diff_th, K_th, min_event_length, V_azi, V_ele, in_sd,
             filtered_event_list.append(e)
     event_list = filtered_event_list
 
-    if debug_plot:
-        # # plot doa estimates and particle trajectories
-        # plt.figure()
-        # plt.grid()
-        # # framewise estimates
-        # est_csv = np.loadtxt(open(csv_file_path, "rb"), delimiter=",")
-        # t = est_csv[:, 0] * 10
-        # a = est_csv[:, 1]
-        # e = est_csv[:, 2]
-        # plt.scatter(t, a, marker='x', edgecolors='b')
-        # # particle filter
-        # for e_idx, e in enumerate(event_list):
-        #     azis = np.asarray(e.get_azis()) * 180 / np.pi
-        #     azis = [a + (360) if a < 0 else a for a in azis] # adjust range to [-pi, pi]
-        #     plt.plot(e.get_frames(), azis, marker='.', color='chartreuse')
-
-        #  PLOT # todo check elevation/inclination
-        plt.figure()
-        title_string = str(V_azi) + '_' + str(V_ele) + '_' + str(in_sd) + '_' + str(in_sdn) + '_' + str(
-            init_birth) + '_' + str(in_cp) + '_' + str(num_particles)
-        plt.title(title_string)
-        plt.grid()
-
-        # framewise estimates
-        est_csv = np.loadtxt(open(csv_file_path, "rb"), delimiter=",")
-        t = est_csv[:, 0] * 10 / 2 # TODO: ADAPTIVE DECIMATION
-        a = est_csv[:, 1]
-        e = est_csv[:, 2]
-        plt.scatter(t, a, marker='x', edgecolors='b')
-
-        # groundtruth
-        gt_csv = np.loadtxt(open(metadata_file_path, "rb"), delimiter=",")
-        t = gt_csv[:, 0]
-        a = np.mod(gt_csv[:, 3], 360)
-        e = gt_csv[:, 4]
-        plt.scatter(t, a, facecolors='none', edgecolors='r')
-
-        # particle filter
-        for e_idx, e in enumerate(event_list):
-            azis = e.get_azis() * 180 / np.pi
-            azis = [a + 360 if a < 0 else a for a in azis]  # adjust range to [-pi, pi]
-
-            plt.plot(e.get_frames(), azis, marker='.', markersize=1, color='chartreuse')
-
     return event_list
 
 
 
-def evaluate_doa(pred_event_list, gt_event_list):
+def evaluate_doa(pred_event_list, gt_event_list, plot=False):
     """
     Given an estimated event list and the corresponding groundtruth event list,
-    compute the doa score (distance and recall) based in DCASE2019 DOA metrics (class-independent)
+    compute the doa score (doa error and frame recall) based in DCASE2019 DOA metrics (class-independent)
     :param pred_event_list: predicted event list
     :param gt_event_list:  annotated event list
     :return: tuple (doa error, number of events estimation distance)
@@ -396,7 +338,6 @@ def evaluate_doa(pred_event_list, gt_event_list):
     total_num_predicted_doas = get_total_num_doas(pred_event_list)
 
     doa_error = total_distance / total_num_predicted_doas
-    print(doa_error)
 
     ## estimation distance
 
@@ -414,32 +355,25 @@ def evaluate_doa(pred_event_list, gt_event_list):
     false_negatives = np.sum(pred_num_doas < gt_num_doas)
     false_positives = np.sum(pred_num_doas > gt_num_doas)
     recall = (true_positives + false_positives) / (true_positives + false_positives + false_negatives)
-    print(recall)
-    # average_estimation_distance = np.mean(np.abs(gt_num_doas - pred_num_doas))
-    # print(average_estimation_distance)
 
-    import matplotlib.pyplot as plt
-    plt.figure()
-    plt.plot(pred_num_doas, label='pred')
-    plt.plot(gt_num_doas, label='gt')
-    plt.grid()
-    plt.legend()
-    plt.show()
+    # import matplotlib.pyplot as plt
+    # plt.figure()
+    # plt.plot(pred_num_doas, label='pred')
+    # plt.plot(gt_num_doas, label='gt')
+    # plt.grid()
+    # plt.legend()
 
-    # return doa_error, average_estimation_distance
     return doa_error, recall
 
 
-def assign_events(pred_event_list, gt_event_list, similiarity_th=0.5):
+def assign_events(pred_event_list, gt_event_list, similiarity_th=0.5, plot=False):
 
     def common_elements(list1, list2):
         return sorted(list(set(list1).intersection(list2)))
 
     gt_len, pred_len = len(gt_event_list), len(pred_event_list)
-    ind_pairs = np.array([[x, y] for y in range(pred_len) for x in range(gt_len)])
     time_similarity_matrix = np.zeros((gt_len, pred_len))
     space_similarity_matrix = np.zeros((gt_len, pred_len))
-    total_similarity_matrix = None
 
     # Slow implementation
 
@@ -453,20 +387,22 @@ def assign_events(pred_event_list, gt_event_list, similiarity_th=0.5):
                 min( len(common_frames)/len(gt_frames), len(common_frames)/len(pred_frames) )
 
             # check spatial coincidence - time-restricted
-            for frame in common_frames:
-                index_of_frame_gt = np.where(gt_frames==frame)[0][0]
-                azi_gt = gt_event.get_azis()[index_of_frame_gt]
-                ele_gt = gt_event.get_eles()[index_of_frame_gt]
-                pos_gt = np.asarray([[azi_gt, ele_gt]])
+            # only if time similarity is not zero
+            if time_similarity_matrix[gt_event_idx, pred_event_idx] > 0:
+                for frame in common_frames:
+                    index_of_frame_gt = np.where(gt_frames==frame)[0][0]
+                    azi_gt = gt_event.get_azis()[index_of_frame_gt]
+                    ele_gt = gt_event.get_eles()[index_of_frame_gt]
+                    pos_gt = np.asarray([[azi_gt, ele_gt]])
 
-                index_of_frame_pred = np.where(pred_frames==frame)[0][0]
-                azi_pred = pred_event.get_azis()[index_of_frame_pred]
-                ele_pred = pred_event.get_eles()[index_of_frame_pred]
-                pos_pred = np.asarray([[azi_pred, ele_pred]])
+                    index_of_frame_pred = np.where(pred_frames==frame)[0][0]
+                    azi_pred = pred_event.get_azis()[index_of_frame_pred]
+                    ele_pred = pred_event.get_eles()[index_of_frame_pred]
+                    pos_pred = np.asarray([[azi_pred, ele_pred]])
 
-                # normalized inverse of distance: 1 is coincidence, 0 is maximum distance (pi)
-                space_similarity_matrix[gt_event_idx, pred_event_idx] = \
-                    np.abs(np.pi - distance_between_gt_pred(pos_gt, pos_pred)) / np.pi
+                    # normalized inverse of distance: 1 is coincidence, 0 is maximum distance (pi)
+                    space_similarity_matrix[gt_event_idx, pred_event_idx] = \
+                        np.abs(np.pi - distance_between_gt_pred(pos_gt, pos_pred)) / np.pi
 
     # get total similarity and find most likely (highest scoring) pred event for each gt event
     total_similarity_matrix = time_similarity_matrix * space_similarity_matrix
@@ -491,27 +427,45 @@ def assign_events(pred_event_list, gt_event_list, similiarity_th=0.5):
                 best_pred_events[other_candidate_idx] = np.nan
             else:
                 best_pred_events[gt_event_idx] = np.nan
-    print(best_pred_events)
+    # print(best_pred_events)
 
-    def highlight_cell(x, y, ax=None, **kwargs):
-        rect = plt.Rectangle((x-0.5, y-0.5), 1, 1, fill=False, **kwargs)
-        ax = ax or plt.gca()
-        ax.add_patch(rect)
-        return rect
+    #####################################
+    # Assignment evaluation
+    # Categories:
+    #   - true positives: events correctly detected
+    #   - false positives: events incorrectly detected (present in prediction, but not in groundtruth)
+    #   - false negatives: events incorrectly not detected (present in groundtruth but not in prediction)
+    # Metrics:
+    #   - Precision: events correctly detected vs. all events detected
+    #   - Recall: events correctly detected vs. all events in groundtruth
 
-    plt.figure()
-    plt.subplot(311)
-    plt.title("time similarity")
-    plt.imshow(time_similarity_matrix)
-    plt.subplot(312)
-    plt.title("space similarity")
-    plt.imshow(space_similarity_matrix)
-    plt.subplot(313)
-    plt.title("total similarity")
-    plt.imshow(total_similarity_matrix)
-    for idx in range(gt_len):
-        highlight_cell(best_pred_events[idx], idx, color="red", linewidth=1)
+    # number of individual estimated events: number of non-nan entries in best_pred_events array
+    precision = len(np.where(~np.isnan(best_pred_events))[0]) / pred_len
+    recall = len(np.where(~np.isnan(best_pred_events))[0]) / gt_len
+
+    # PLOT
+    if plot:
+        def highlight_cell(x, y, ax=None, **kwargs):
+            rect = plt.Rectangle((x-0.5, y-0.5), 1, 1, fill=False, **kwargs)
+            ax = ax or plt.gca()
+            ax.add_patch(rect)
+            return rect
+
+        plt.figure()
+        plt.subplot(311)
+        plt.title("time similarity")
+        plt.imshow(time_similarity_matrix)
+        plt.subplot(312)
+        plt.title("space similarity")
+        plt.imshow(space_similarity_matrix)
+        plt.subplot(313)
+        plt.title("total similarity")
+        plt.imshow(total_similarity_matrix)
+        for idx in range(gt_len):
+            highlight_cell(best_pred_events[idx], idx, color="red", linewidth=1)
 
     # row_ind, col_ind = linear_sum_assignment(cost_mat)
     # cost = cost_mat[row_ind, col_ind].sum()
-    return best_pred_events
+    return best_pred_events, precision, recall
+
+

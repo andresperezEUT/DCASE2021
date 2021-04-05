@@ -1,33 +1,39 @@
 """
 main.py
+- Plot localiization and detection results
+- Extract mono audios from given configuration
 """
+
 from localization_detection import ld_particle, evaluate_doa, assign_events
-from localization_detection import parse_annotations
+from localization_detection import localize_detect, get_groundtruth, get_evaluation_metrics
 import time, datetime
 import os
 import soundfile as sf
-from utils import compute_spectrogram, get_mono_audio_from_event, plot_results
+from utils import compute_spectrogram, get_mono_audio_from_event, plot_results, get_class_name_dict, create_folder
 import sys
-
-from matlab import engine
-eng = engine.start_matlab()
-this_file_path = os.path.dirname(os.path.abspath(__file__))
-# matlab_path = this_file_path + '/../multiple-target-tracking-master'
-matlab_path = '/home/pans/source/DCASE2021/multiple-target-tracking-master'
-eng.addpath(matlab_path)
+import numpy as np
+import config as conf
 
 
-data_folder_path = '/home/pans/datasets/DCASE2021/foa_dev/dev-train'
-csv_file_path = '/home/pans/datasets/DCASE2021/metadata_dev/dev-train'
-audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(data_folder_path) for f in fn]
+################################################
+# Config
 
-fs = 24000
-label_hop_len_s = 0.1 # todo check that it still holds
-window_size = 2400
-window_overlap = 1200
-nfft = 2400
+plot = False
+write = True
+output_dataset_name = 'test_event_dataset'
 
-plot = True
+if write:
+    # Create output folder structure
+    class_name_dict = get_class_name_dict()
+    output_path = os.path.join('/home/pans/datasets/DCASE2021/generated', output_dataset_name)
+    create_folder(output_path)
+    for class_name in class_name_dict.values():
+        folder = os.path.join(output_path, class_name)
+        create_folder(folder)
+    # Helper variables
+    occurrences_per_class = np.zeros(conf.num_classes, dtype=int)
+
+audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(conf.data_folder_path) for f in fn]
 
 ################################################
 # PARAMETERS
@@ -41,55 +47,90 @@ in_sdn = 20  # [0, 50] linear
 init_birth = 0.25  # [0, 1] linear
 in_cp = 0.25  # [0, 1] linear
 num_particles = 30 # [10, 100]
-################################################
+event_similarity_th = 0.3
 
+parameters = {}
+parameters['diff_th'] = diff_th
+parameters['K_th'] = K_th
+parameters['min_event_length'] = min_event_length
+parameters['V_azi'] = V_azi
+parameters['V_ele'] = V_ele
+parameters['in_sd'] = in_sd
+parameters['in_sdn'] = in_sdn
+parameters['init_birth'] = init_birth
+parameters['in_cp'] = in_cp
+parameters['num_particles'] = num_particles
+parameters['event_similarity_th'] = event_similarity_th
+
+
+
+
+##################################################################
+# Main loop
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
         audio_files = audio_files[:10]
-        # audio_files = [audio_files[1]]
+        # audio_files = [audio_files[0]]
 
     start_time = time.time()
     print('                                              ')
     print('-------------- PROCESSING FILES --------------')
-    print('Folder path: ' + data_folder_path)
 
+    print('Folder path: ' + conf.data_folder_path)
+    ##################################################################
+    # Iterate over all files
     for audio_file_idx, audio_file_name in enumerate(audio_files):
-
         st = datetime.datetime.fromtimestamp(time.time()).strftime('%H:%M:%S')
         print("{}: {}, {}".format(audio_file_idx, st, audio_file_name))
 
-        # Open file
-        audio_file_path = os.path.join(data_folder_path, audio_file_name)
-        b_format, sr = sf.read(audio_file_path)
+        ##################################################
+        # Perform localization and detection, and compute evaluation metrics
+        est_event_list = localize_detect(parameters, audio_file_name)
+        if len(est_event_list) == 0:
+            print('Empty list. Continue')
+            continue
 
-        # Get spectrogram
-        # TODO: move to suitable place
-        stft_method_args = ['hann', window_size, window_overlap, nfft]
-        stft = compute_spectrogram(b_format, sr, *stft_method_args)
+        gt_event_list = get_groundtruth(audio_file_name)
+        doa_error, frame_recall = evaluate_doa(est_event_list, gt_event_list, plot=plot)
+        assignment_array, event_precision, event_recall = \
+            assign_events(est_event_list, gt_event_list, parameters['event_similarity_th'], plot=plot)
 
-        # ############################################
-        # Localization and detection analysis: from stft to event_list
-        ld_method_string = 'ld_particle'
-        ld_method = locals()[ld_method_string]
-        ld_method_args = [0.1, 10, 10, 2, 1, 5, 20, 0.25, 0.25, 30]
-        est_event_list = ld_method(stft, eng, *ld_method_args)
+        print('doa_error:', doa_error)
+        print('frame_recall:', frame_recall)
+        print('event_precision:', event_precision)
+        print('event_recall:', event_recall)
 
-        # ############################################
-        pred_file_name = audio_file_name.split('/')[-1].split('.')[0] + '.csv'
-        pred_file_path = os.path.join(csv_file_path, pred_file_name)
-        gt_event_list = parse_annotations(pred_file_path)
+        # ###########################################
+        # Extract estimated events. Assign them a class if correctly identified. Save them in training dataset.
+        for est_event_idx, est_event in enumerate(est_event_list):
+            mono_event = get_mono_audio_from_event(audio_file_name, est_event, conf.fs, conf.frame_length)
+            # Obtain classID
+            classID = None
+            if est_event_idx in assignment_array:
+                gt_event_idx = np.where(assignment_array == est_event_idx)[0][0]
+                classID = gt_event_list[gt_event_idx].get_classID()
+            else:
+                classID = conf.undefined_classID
 
-        ############################################
-        # compute DOA evaluation metrics
-        # doa_error, recall = evaluate_doa(est_event_list, gt_event_list)
-        # estimation distance
-        similarity_th = 0.3
-        assignment = assign_events(est_event_list, gt_event_list, similarity_th)
-        # plot
-        plot_results(est_event_list, gt_event_list, pred_file_name, assign=assignment)
+            # Write file
+            if write:
+                file_name = os.path.split(os.path.splitext(audio_file_name)[0])[-1]
+                event_occurrence_idx = occurrences_per_class[classID]
+                class_name = class_name_dict[classID]
+                output_name = str(event_occurrence_idx) + '_' + file_name + '.wav'
+                output_name = os.path.join(output_path, class_name, output_name)
+                sf.write(output_name, mono_event, conf.fs)
+            # increment counter
+            occurrences_per_class[classID] += 1
+
+
+        ###########################################
+        # Plot
         if plot:
+            plot_results(est_event_list, gt_event_list, audio_file_name, assign=assignment_array)
             import matplotlib.pyplot as plt
             plt.show()
+
 
     print('-------------- PROCESSING FINISHED --------------')
     print('                                                 ')

@@ -7,7 +7,7 @@ import scipy.signal
 import matplotlib.pyplot as plt
 import os
 import csv
-import librosa
+import soundfile as sf
 
 
 # DATA MANAGEMENT
@@ -411,29 +411,27 @@ def mono_extractor(b_format, azis=None, eles=None, mode='beam'):
     return x
 
 
-def get_mono_audio_from_event(b_format, event, fs, frame_length):
+def get_mono_audio_from_event(audio_file_path, event, fs, frame_length):
     """
-    :param b_format: (frames, channels) IN SN3D
+    :param audio_file_path: (frames, channels) IN SN3D
     :param event:
     :param fs:
     :param frame_length:
     :return:
     """
 
+
     frames = event.get_frames()
     w = frame_length  # frame length of the annotations
     samples_per_frame = int(w * fs)
     start_time_samples = int(frames[0] * samples_per_frame)
     end_time_samples = int((frames[-1] + 1) * samples_per_frame)  # add 1 here so we push the duration to the end
-    mono_event = None
-
 
     azi_frames = event.get_azis()
     ele_frames = event.get_eles()
     # frames to samples; TODO: interpolation would be cool
     num_frames = len(frames)
     num_samples = num_frames * samples_per_frame
-
     assert (end_time_samples - start_time_samples == num_samples)
 
     azi_samples = np.zeros(num_samples)
@@ -442,6 +440,7 @@ def get_mono_audio_from_event(b_format, event, fs, frame_length):
         azi_samples[(idx * samples_per_frame):(idx + 1) * samples_per_frame] = azi_frames[idx]
         ele_samples[(idx * samples_per_frame):(idx + 1) * samples_per_frame] = ele_frames[idx]
 
+    b_format, sr = sf.read(audio_file_path)
     mono_event = mono_extractor(b_format[start_time_samples:end_time_samples],
                                 azis=azi_samples * np.pi / 180,  # deg2rad
                                 eles=ele_samples * np.pi / 180,  # deg2rad
@@ -451,3 +450,9 @@ def get_mono_audio_from_event(b_format, event, fs, frame_length):
     # normalize audio to 1
     mono_event /= np.max(np.abs(mono_event))
     return mono_event
+
+# from cls_feature_class.py, baseline 2020
+def create_folder(folder_name):
+    if not os.path.exists(folder_name):
+        print('{} folder does not exist, creating it.'.format(folder_name))
+        os.makedirs(folder_name)
