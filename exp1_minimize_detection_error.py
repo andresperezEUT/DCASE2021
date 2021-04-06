@@ -173,7 +173,7 @@ if __name__ == '__main__':
 
     ##################################################
     # Optimization parameters
-    initial_temp = 21 # initial temperature should be calibrated
+    initial_temp = 1.5 # initial temperature should be calibrated
     final_temp = 0.01*initial_temp # good practice: % of initial temperature: 0.01.
     lmarkov = 20 # number of iterations on each temperature step
     r = 0.90 # geometric factor for temperature decrease. It should be calibrated
