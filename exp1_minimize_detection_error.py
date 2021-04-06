@@ -65,7 +65,20 @@ audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(conf.data_folder_pa
 json_output_folder_path = '/home/pans/datasets/DCASE2021/generated/exp1'
 write_json_file = True
 
+
+
+##################################################
+# Optimization parameters
+initial_temp = 1.5  # initial temperature should be calibrated
+final_temp = 0.01 * initial_temp  # good practice: % of initial temperature: 0.01.
+lmarkov = 20  # number of iterations on each temperature step
+r = 0.90  # geometric factor for temperature decrease. It should be calibrated
+nvar = 3
+neighbor_dist = 1
+current_temp = initial_temp
+num_iters = int(lmarkov * (math.log(final_temp / initial_temp, r)))
 simulate_cost = True
+
 
 
 
@@ -137,12 +150,14 @@ def get_random_start(param_values_lengths):
         random_indices[p_idx] = random.randint(0, param_values_lengths[p_idx]-1)
     return random_indices
 
-def get_neighbors(param_indices, param_values_lengths, nvar):
+def get_neighbors(param_indices, param_values_lengths, nvar, neighbor_dist):
     new_param_indices = param_indices
     # set which params will move
     move_params_indices = random.sample(range(len(param_values_lengths)), nvar) # nvar movements are randomly defined
     for m in move_params_indices:
-        new_idx = param_indices[m] + random.randint(-1,1) # just 1 step in any direction is allowed. This could be also be a parameter
+        # new_idx = param_indices[m] + random.randint(-1,1) # just 1 step in any direction is allowed. This could be also be a parameter
+        # implemented as either +neighbor_dist or -neighbor_dist
+        new_idx = param_indices[m] + (((random.randint(0,1) * 2) -1) * neighbor_dist)
         new_param_indices[m] = int(max(0, min(param_values_lengths[m]-1, new_idx)))
     return new_param_indices
 
@@ -172,17 +187,6 @@ if __name__ == '__main__':
         # audio_files = [audio_files[1]]
 
     ##################################################
-    # Optimization parameters
-    initial_temp = 1.5 # initial temperature should be calibrated
-    final_temp = 0.01*initial_temp # good practice: % of initial temperature: 0.01.
-    lmarkov = 20 # number of iterations on each temperature step
-    r = 0.90 # geometric factor for temperature decrease. It should be calibrated
-    nvar=3
-    current_temp = initial_temp
-    iter = 0
-    num_iters = int(lmarkov*(math.log(final_temp/initial_temp,r)))
-
-    ##################################################
     # Run initial experiment with random start
     current_param_indices = get_random_start(param_values_lengths)
     current_parameters = assign_parameters(param_values, current_param_indices)
@@ -196,6 +200,7 @@ if __name__ == '__main__':
 
     ##################################################
     # Main loop
+    iter = 0
     while current_temp > final_temp:
         print('                                                                           ')
         print('======================= ITERATION ' + str(iter+1) + ' of ' + str(num_iters) + ' =======================')
@@ -204,9 +209,10 @@ if __name__ == '__main__':
         print('current_parameters', current_parameters)
         for i in range(lmarkov):
             ncmsm = 1 # number of markov chains without improvements
+
             ##################################################
             # Compute next iteration
-            new_param_indices = get_neighbors(current_param_indices, param_values_lengths,nvar)
+            new_param_indices = get_neighbors(current_param_indices, param_values_lengths, nvar, neighbor_dist)
             new_parameters = assign_parameters(param_values, new_param_indices)
             if simulate_cost:
                 new_cost = random.random() * 1.6
