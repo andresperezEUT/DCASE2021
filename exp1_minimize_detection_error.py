@@ -10,8 +10,17 @@ Frame-level metrics reported for completion.
 """
 RAFA: aquí está el script que he hecho para simulated annealing, con el espacio de parámetros discretizado.
 Échale un vistazo a la implementación, hay dos cosas que no me convencen
-- Los vecinos se cambian todos a la vez, esto no se si es así
+- Los vecinos se cambian todos a la vez, esto no se si es así:
+        * Efectivamente este paso es bastante importante y requiere definir una función de vecindad adecuada. Yo siempre he trabajado con los siguientes parámetros:
+            - Nvar: Número de variables que cambian en cada iteración. Hay muchas técnicas y lo suyo es calibrarlo con experimientos. Lo pongo en 3 por empezar por algo. Podemos ir cambiándolo
+            - Nsaltos: Cuantos saltos damos al cambiar cada variable. Como el espacio de búsqueda que has definido es bastante bajo, lo dejaré en uno
+            Estos pueden ser estáticos o dinámicos. La idea es la misma, que los movimientos sean más pequeños conforme vamos avanzando en la búsqueda. Como primera aproximación los dejamos estáticos.
 - Cuando los nuevos parámetros no mejoran, la función con la que se compara el random no me convence (l. 200)
+        * Aquí te refieres a la función de probabilidad??
+        
+        *He añadido alguna cosa más: cadenas de markov, factor geométrico en vez del alpha, almacenar mejor solución (que no tiene porque ser la actual)...lo hablamos
+        
+        
 Si quieres ejecutarlo, puedes poner la variable `simulate_cost` a true para no tener que llamar los métodos de verdad.
 """
 
@@ -128,12 +137,13 @@ def get_random_start(param_values_lengths):
         random_indices[p_idx] = random.randint(0, param_values_lengths[p_idx]-1)
     return random_indices
 
-def get_neighbors(param_indices, param_values_lengths):
-    new_param_indices = np.empty(len(param_indices), dtype=int)
-    for p_idx in range(len(param_values_lengths)):
-        # either stay, increase 1 or decrease 1, always within limits
-        new_idx = param_indices[p_idx] + random.randint(-1, 1)
-        new_param_indices[p_idx] = int(max(0, min(param_values_lengths[p_idx]-1, new_idx)))
+def get_neighbors(param_indices, param_values_lengths, nvar):
+    new_param_indices = param_indices
+    # set which params will move
+    move_params_indices = random.sample(range(len(param_values_lengths)), nvar) # nvar movements are randomly defined
+    for m in move_params_indices:
+        new_idx = param_indices[m] + random.randint(-1,1) # just 1 step in any direction is allowed. This could be also be a parameter
+        new_param_indices[m] = int(max(0, min(param_values_lengths[m]-1, new_idx)))
     return new_param_indices
 
 def assign_parameters(param_values, param_indices):
@@ -163,12 +173,14 @@ if __name__ == '__main__':
 
     ##################################################
     # Optimization parameters
-    initial_temp = 21
-    final_temp = 0.1
-    alpha = 0.01
+    initial_temp = 21 # initial temperature should be calibrated
+    final_temp = 0.01*initial_temp # good practice: % of initial temperature: 0.01.
+    lmarkov = 20 # number of iterations on each temperature step
+    r = 0.90 # geometric factor for temperature decrease. It should be calibrated
+    nvar=3
     current_temp = initial_temp
     iter = 0
-    num_iters = int(np.ceil((initial_temp - final_temp) / alpha))
+    num_iters = int(lmarkov*(math.log(final_temp/initial_temp,r)))
 
     ##################################################
     # Run initial experiment with random start
@@ -179,6 +191,8 @@ if __name__ == '__main__':
         current_cost = random.random() * 1.6
     else:
         current_cost = run_all_dataset(audio_files, current_parameters, write=write_json_file)[0]
+    best_cost = current_cost
+    best_parameters = current_parameters
 
     ##################################################
     # Main loop
@@ -188,39 +202,51 @@ if __name__ == '__main__':
         print('== Temperature: ' + str(current_temp))
         print('current_cost', current_cost)
         print('current_parameters', current_parameters)
-
-        ##################################################
-        # Compute next iteration
-        new_param_indices = get_neighbors(current_param_indices, param_values_lengths)
-        new_parameters = assign_parameters(param_values, new_param_indices)
-        if simulate_cost:
-            new_cost = random.random() * 1.6
-        else:
-            new_cost = run_all_dataset(audio_files, current_parameters, write=write_json_file)[0]
-
-        ##################################################
-        # Assert improvement (smaller cost)
-        cost_diff = current_cost - new_cost
-        print('current_cost', current_cost)
-        print('new_cost', new_cost)
-        print('cost_diff', cost_diff)
-
-        ##################################################
-        # Continue path if new parameter set improved
-        if cost_diff > 0:
-            print('update', math.exp(-cost_diff / current_temp))
-            current_param_indices = new_param_indices
-            current_parameters = new_parameters
-            current_cost = new_cost
-        else:
+        for i in range(lmarkov):
+            ncmsm = 1 # number of markov chains without improvements
             ##################################################
-            # Continue path with random probability, if new parameter set didn't improve
-            rand = random.uniform(0, 1)
-            if rand < math.exp(-cost_diff / current_temp):
-                print('random update', rand, math.exp(-cost_diff / current_temp))
+            # Compute next iteration
+            new_param_indices = get_neighbors(current_param_indices, param_values_lengths,nvar)
+            new_parameters = assign_parameters(param_values, new_param_indices)
+            if simulate_cost:
+                new_cost = random.random() * 1.6
+            else:
+                new_cost = run_all_dataset(audio_files, current_parameters, write=write_json_file)[0]
+
+            ##################################################
+            # Assert improvement (smaller cost)
+            cost_diff = current_cost - new_cost
+            #print('current_cost', current_cost)
+            #print('new_cost', new_cost)
+            #print('cost_diff', cost_diff)
+
+            ##################################################
+            # Continue path if new parameter set improved
+            if cost_diff > 0:
+                print('update', math.exp(-cost_diff / current_temp))
                 current_param_indices = new_param_indices
                 current_parameters = new_parameters
                 current_cost = new_cost
-
-        current_temp -= alpha
-        iter += 1
+                # if current cost improves best cost, update it
+                if current_cost < best_cost:
+                    best_cost = current_cost
+                    best_parameters = current_parameters
+                    ncmsm = 0
+                    print('New optimized cost ',best_cost)
+                    print('New optimized parameters ',best_parameters)
+            else:
+                ##################################################
+                # Continue path with random probability, if new parameter set didn't improve
+                rand = random.uniform(0, 1)
+                if rand < math.exp(-cost_diff / current_temp):
+                    #print('random update', rand, math.exp(-cost_diff / current_temp))
+                    current_param_indices = new_param_indices
+                    current_parameters = new_parameters
+                    current_cost = new_cost
+            iter += 1
+        if ncmsm == 1:
+            print('Not improvements for temp=',current_temp)
+        current_temp = current_temp*r
+    print('Finished')
+    print('Best cost: ',best_cost)
+    print('Best parameters: ',best_parameters)
