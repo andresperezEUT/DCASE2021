@@ -6,6 +6,7 @@ Perform simulated annealing search [1] by joint minimization of two cost functio
 Frame-level metrics reported for completion.
 [1] How to Implement Simulated Annealing Algorithm in Python.  https://medium.com/swlh/how-to-implement-simulated-annealing-algorithm-in-python-ab196c2f56a0
 """
+from utils import create_folder
 
 """
 RAFA: aquí está el script que he hecho para simulated annealing, con el espacio de parámetros discretizado.
@@ -75,14 +76,16 @@ param_values = [
 param_values_lengths = [len(p) for p in param_values]
 
 audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(conf.data_folder_path) for f in fn]
-json_output_folder_path = '/home/pans/datasets/DCASE2021/generated/exp1'
+json_output_folder_path = '/home/pans/datasets/DCASE2021/generated/exp2'
 write_json_file = True
+if write_json_file:
+    create_folder(json_output_folder_path)
 
 
 
 ##################################################
 # Optimization parameters
-initial_temp = 1.5  # initial temperature should be calibrated
+initial_temp = 1.0  # initial temperature should be calibrated
 final_temp = 0.01 * initial_temp  # good practice: % of initial temperature: 0.01.
 lmarkov = 20  # number of iterations on each temperature step
 r = 0.90  # geometric factor for temperature decrease. It should be calibrated
@@ -90,6 +93,7 @@ nvar = 3
 neighbor_dist = 1
 current_temp = initial_temp
 num_iters = int(lmarkov * (math.log(final_temp / initial_temp, r)))
+num_max_markov = 1 # max number of markov chains allowed without cost improvement
 simulate_cost = False
 
 
@@ -98,8 +102,8 @@ simulate_cost = False
 ##################################################################
 # Methods for execution of the parametric filter
 
-def loss_function(event_precision, event_recall):
-    return np.abs(event_precision-0.6) + np.abs(event_recall-1)
+def loss_function(frame_recall):
+    return 1-frame_recall
 
 def run_all_dataset(audio_files, parameters, write=False):
     # Initialize as nan, so we can track if a problem happened at any file
@@ -126,7 +130,7 @@ def run_all_dataset(audio_files, parameters, write=False):
     meanER = np.mean(ER[~np.isnan(ER)])
     meanDOA = np.mean(DOA[~np.isnan(DOA)])
     meanFR = np.mean(FR[~np.isnan(FR)])
-    cost = loss_function(meanEP, meanER)
+    cost = loss_function(meanFR)
 
     # Write to file
     if write:
@@ -190,13 +194,12 @@ def assign_parameters(param_values, param_indices):
 
 
 
-
-
 ##################################################################
 # Main loop
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
-        audio_files = audio_files[:10]
+        # audio_files = conf.short_audio_file_list
+        audio_files = [audio_files[1]]
 
     ##################################################
     # Run initial experiment with random start
@@ -204,7 +207,7 @@ if __name__ == '__main__':
     current_parameters = assign_parameters(param_values, current_param_indices)
     current_cost = None
     if simulate_cost:
-        current_cost = random.random() * 1.6
+        current_cost = random.random()
     else:
         current_cost = run_all_dataset(audio_files, current_parameters, write=write_json_file)[0]
     best_cost = current_cost
@@ -219,17 +222,16 @@ if __name__ == '__main__':
         print('== Temperature: ' + str(current_temp))
         print('current_cost', current_cost)
         print('current_parameters', current_parameters)
-        for i in range(lmarkov):
-            # TODO rafa, this parameter seems to do nothing (every iteration in range(lmarkov) rewrites it, so after the loop it is always ==1 except if there was an improvement on last markov iteration
-            ncmsm = 1 # number of markov chains without improvements
 
+        ncmsm = 0 # number of markov chains without improvements
+        for i in range(lmarkov):
 
             ##################################################
             # Compute next iteration
             new_param_indices = get_neighbors(current_param_indices, param_values_lengths, nvar, neighbor_dist)
             new_parameters = assign_parameters(param_values, new_param_indices)
             if simulate_cost:
-                new_cost = random.random() * 1.6
+                new_cost = random.random()
             else:
                 new_cost = run_all_dataset(audio_files, current_parameters, write=write_json_file)[0]
 
@@ -252,21 +254,23 @@ if __name__ == '__main__':
                     best_cost = current_cost
                     best_parameters = current_parameters
                     ncmsm = 0
-                    print('New optimized cost ',best_cost)
-                    print('New optimized parameters ',best_parameters)
+                    print('New optimized cost ', best_cost)
+                    print('New optimized parameters ', best_parameters)
             else:
                 ##################################################
                 # Continue path with random probability, if new parameter set didn't improve
                 rand = random.uniform(0, 1)
                 if rand < math.exp(-cost_diff / current_temp):
-                    #print('random update', rand, math.exp(-cost_diff / current_temp))
+                    print('random update', rand, math.exp(-cost_diff / current_temp))
                     current_param_indices = new_param_indices
                     current_parameters = new_parameters
                     current_cost = new_cost
+                ncmsm += 1
             iter += 1
-        if ncmsm == 1:
-            print('Not improvements for temp=',current_temp)
+            if ncmsm > num_max_markov:
+                print('Not improvements for temp=', current_temp)
+                break
         current_temp = current_temp*r
     print('Finished')
-    print('Best cost: ',best_cost)
-    print('Best parameters: ',best_parameters)
+    print('Best cost: ', best_cost)
+    print('Best parameters: ', best_parameters)
