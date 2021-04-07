@@ -32,6 +32,19 @@ Resultados preliminares de coste:
 
 """
 
+"""
+resultados en fold4_room1_mix035.wav (aprox 3 hours)
+Best cost:  0.44999999999999996
+Best parameters:  {'diff_th': 0.1, 'K_th': 25, 'min_event_length': 13, 'V_azi': 0.5, 'in_sd': 5, 'in_sdn': 25, 'init_birth': 0.6, 'in_cp': 0.4, 'num_particles': 30, 'event_similarity_th': 0.2}
+
+resultados en los 10 primeros audios [fold4_room1_mix031.wav, fold4_room1_mix035.wav, fold4_room1_mix006.wav, fold4_room1_mix002.wav, fold4_room2_mix002.wav, fold1_room2_mix026.wav, fold3_room1_mix043.wav, fold1_room1_mix036.wav, fold3_room2_mix043.wav, fold3_room1_mix018.wav]
+(stopped after 16 hours, estimated runtime 30 hours)
+New optimized cost  0.555171035860691
+New optimized parameters  {'diff_th': 0.5, 'K_th': 19, 'min_event_length': 13, 'V_azi': 5, 'in_sd': 25, 'in_sdn': 15, 'init_birth': 0.4, 'in_cp': 0.6, 'num_particles': 50, 'event_similarity_th': 0.2}
+
+
+"""
+
 import math
 import random
 import sys
@@ -77,7 +90,7 @@ nvar = 3
 neighbor_dist = 1
 current_temp = initial_temp
 num_iters = int(lmarkov * (math.log(final_temp / initial_temp, r)))
-simulate_cost = True
+simulate_cost = False
 
 
 
@@ -183,8 +196,7 @@ def assign_parameters(param_values, param_indices):
 # Main loop
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
-        audio_files = audio_files[:2]
-        # audio_files = [audio_files[1]]
+        audio_files = conf.short_audio_file_list
 
     ##################################################
     # Run initial experiment with random start
@@ -208,7 +220,9 @@ if __name__ == '__main__':
         print('current_cost', current_cost)
         print('current_parameters', current_parameters)
         for i in range(lmarkov):
+            # TODO rafa, this parameter seems to do nothing (every iteration in range(lmarkov) rewrites it, so after the loop it is always ==1 except if there was an improvement on last markov iteration
             ncmsm = 1 # number of markov chains without improvements
+
 
             ##################################################
             # Compute next iteration

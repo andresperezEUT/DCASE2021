@@ -18,8 +18,8 @@ import config as conf
 ################################################
 # Config
 
-plot = False
-write = True
+plot = True
+write = False
 output_dataset_name = 'test_event_dataset'
 
 if write:
@@ -69,8 +69,7 @@ parameters['event_similarity_th'] = event_similarity_th
 # Main loop
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
-        audio_files = audio_files[:10]
-        # audio_files = [audio_files[0]]
+        audio_files = conf.short_audio_file_list
 
     start_time = time.time()
     print('                                              ')
@@ -120,8 +119,8 @@ if __name__ == '__main__':
                 output_name = str(event_occurrence_idx) + '_' + file_name + '.wav'
                 output_name = os.path.join(output_path, class_name, output_name)
                 sf.write(output_name, mono_event, conf.fs)
-            # increment counter
-            occurrences_per_class[classID] += 1
+                # increment counter
+                occurrences_per_class[classID] += 1
 
 
         ###########################################
