@@ -25,24 +25,19 @@ RAFA: aquí está el script que he hecho para simulated annealing, con el espaci
 Si quieres ejecutarlo, puedes poner la variable `simulate_cost` a true para no tener que llamar los métodos de verdad.
 """
 
-"""
-Resultados preliminares de coste:
-- Aprox. 6 segundos de media por analizar 1 archivo de audio
-- Probando con 20 archivos por dataset (en vez de 400, reducción x20) son 120 s = 2 minutos por iteración
-- Con 2000 iteraciones, salen aprox. 3 días de tiempo de ejecución (60 con el dataset completo)
 
 """
 
-"""
-resultados en fold4_room1_mix035.wav (aprox 3 hours)
-Best cost:  0.44999999999999996
-Best parameters:  {'diff_th': 0.1, 'K_th': 25, 'min_event_length': 13, 'V_azi': 0.5, 'in_sd': 5, 'in_sdn': 25, 'init_birth': 0.6, 'in_cp': 0.4, 'num_particles': 30, 'event_similarity_th': 0.2}
+resultados short set (8 audios, around 5 hours) - first iteration
+Best cost:  0.028124999999999956
+Best parameters:  {'diff_th': 0.1, 'K_th': 1, 'min_event_length': 7, 'V_azi': 1, 'in_sd': 5, 'in_sdn': 20, 'init_birth': 0.6, 'in_cp': 0.8, 'num_particles': 100, 'event_similarity_th': 0.4}
 
-resultados en los 10 primeros audios [fold4_room1_mix031.wav, fold4_room1_mix035.wav, fold4_room1_mix006.wav, fold4_room1_mix002.wav, fold4_room2_mix002.wav, fold1_room2_mix026.wav, fold3_room1_mix043.wav, fold1_room1_mix036.wav, fold3_room2_mix043.wav, fold3_room1_mix018.wav]
-(stopped after 16 hours, estimated runtime 30 hours)
-New optimized cost  0.555171035860691
-New optimized parameters  {'diff_th': 0.5, 'K_th': 19, 'min_event_length': 13, 'V_azi': 5, 'in_sd': 25, 'in_sdn': 15, 'init_birth': 0.4, 'in_cp': 0.6, 'num_particles': 50, 'event_similarity_th': 0.2}
+resultados full set (400 audios, aprox 5 dias?) - first iteration
+Best cost:  0.021354166666666674
+Best parameters:  {'diff_th': 0.1, 'K_th': 7, 'min_event_length': 7, 'V_azi': 0.5, 'in_sd': 0, 'in_sdn': 25, 'init_birth': 0.6, 'in_cp': 0.6, 'num_particles': 10, 'event_similarity_th': 0.8}
 
+Best cost:  0.0222916666666666  (8 audios, around 5 hours) - second iteration
+Best parameters:  {'diff_th': 0.1, 'K_th': 1, 'min_event_length': 3, 'V_azi': 0.25, 'in_sd': 0, 'in_sdn': 30, 'init_birth': 0.7, 'in_cp': 0.6, 'num_particles': 100, 'event_similarity_th': 0.4}
 
 """
 
@@ -61,18 +56,34 @@ from localization_detection import localize_detect, get_groundtruth, get_evaluat
 ##################################################################
 # Parameters
 
+# first iteration
+# param_values = [
+#     [0.1, 0.3, 0.5, 0.7, 0.9],  # diff_th
+#     [1, 7, 13, 19, 25],  # K_th
+#     [1, 7, 13, 19, 25],  # min_event_length
+#     [0.1, 0.5, 1, 5, 10],  # V_azi
+#     [0, 5, 10, 15, 20, 25, 30],  # in_sd
+#     [0, 5, 10, 15, 20, 25, 30],  # in_sdn
+#     [0.2, 0.4, 0.6, 0.8],  # init_birth
+#     [0.2, 0.4, 0.6, 0.8],  # in_cp
+#     [10, 30, 50, 100],  # num_particles
+#     [0.2, 0.4, 0.6, 0.8],  # event_similarity_th
+# ]
+
+# second iteration
 param_values = [
-    [0.1, 0.3, 0.5, 0.7, 0.9],  # diff_th
-    [1, 7, 13, 19, 25],  # K_th
-    [1, 7, 13, 19, 25],  # min_event_length
-    [0.1, 0.5, 1, 5, 10],  # V_azi
-    [0, 5, 10, 15, 20, 25, 30],  # in_sd
-    [0, 5, 10, 15, 20, 25, 30],  # in_sdn
-    [0.2, 0.4, 0.6, 0.8],  # init_birth
-    [0.2, 0.4, 0.6, 0.8],  # in_cp
+    [0.05, 0.075, 0.1, 0.125, 0.15],  # diff_th
+    [1, 3, 5, 7, 9, 11, 13],  # K_th
+    [3, 5, 7, 9, 11],  # min_event_length
+    [0.25, 0.5, 0.75, 1, 1.25],  # V_azi
+    [0, 1.5, 3, 4.5, 6, 7.5],  # in_sd
+    [15, 17.5, 20, 22.5, 25, 27.5, 30],  # in_sdn
+    [0.5, 0.6, 0.7],  # init_birth
+    [0.5, 0.6, 0.7, 0.8, 0.9],  # in_cp
     [10, 30, 50, 100],  # num_particles
-    [0.2, 0.4, 0.6, 0.8],  # event_similarity_th
+    [0.4, 0.5, 0.6, 0.7, 0.8],  # event_similarity_th
 ]
+
 param_values_lengths = [len(p) for p in param_values]
 
 audio_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(conf.data_folder_path) for f in fn]
@@ -198,8 +209,7 @@ def assign_parameters(param_values, param_indices):
 # Main loop
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] == 'short':
-        # audio_files = conf.short_audio_file_list
-        audio_files = [audio_files[1]]
+        audio_files = conf.short_audio_file_list
 
     ##################################################
     # Run initial experiment with random start
